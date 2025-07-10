@@ -1,117 +1,166 @@
-from clientconnector import ClientConnector, VERS, VERSION
-from clientconnection import ClientConnection
-from socketcommon import create_ordinary_udp_socket, get_loopback_endpoint
-from socket import AF_INET, socket
-from iptools import *
-from select import select
+from clientconnector import ClientConnector
 from time import time_ns
 from packet import *
+from random import randint
 
-def create_server() -> tuple[socket, IP_endpoint]:
-    server_socket = create_ordinary_udp_socket(2010, AF_INET)
-    server_socket_address = get_loopback_endpoint(AF_INET, get_canonical_local_endpoint(server_socket))
-    if server_socket_address is None:
-        return (server_socket, get_canonical_local_endpoint(server_socket))
-    return (server_socket, server_socket_address)
+alphabet = 'abcdefghijklmnopqrstuvwxyz'
 
-def complete_client_connection(client: ClientConnector, server: socket, server_response: bytes | None, response_delay_ns: int):
+def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: int, server_responses: list[tuple[int, bytes, bool, bool]]) -> bool:
+    # server_responses: (delay_ms, data, should_connect, immediate_fail)
+    client = ClientConnector(version, max_timeouts, request_timeout_ms)
+    if not client.is_connecting():
+        print('should be connecting at start')
+        return False
+    if client.is_connected():
+        print('should not be connected at start')
+        return False
+    if client.connect_failed():
+        print('should not be failed at start')
+
     start_time = time_ns()
+    num_packets = 0
+    time_last_request = 0
+    should_connect = False
+    immediate_fail = False
 
     while client.is_connecting():
-        rl, _, _ = select([server], [], [], 0)
-        if len(rl) > 0:
-            data = server.recv(2000)
-            result = interpret_packet_safe(data)
-            print(result)
-        
-        if time_ns() >= start_time + response_delay_ns:
-            client.report_data_received(server_response)
-        
-        tick_result = client.tick()
+        if should_connect:
+            print('should have connected')
+            return False
+        if immediate_fail:
+            print('should have failed')
+            return False
 
-        if tick_result == False:
-            print("Connection failed")
-        if isinstance(tick_result, ClientConnection):
-            print("new connection made")
-    print(f"Connected: {client.is_connected()}")
+        current_time = time_ns()
+        new_responses = list([response for response in server_responses if current_time >= start_time + response[0] * 1_000_000])
+        if any(new_responses):
+            for response in new_responses:
+                server_responses.remove(response)
+                client.report_receive(response[1])
+                should_connect = response[2]
+                immediate_fail = response[3]
+        
+        data_to_send = client.tick()
+        for packet in data_to_send:
+            num_packets += 1
+            if num_packets > max_timeouts:
+                print('too many requests')
+                return False
+            if time_last_request == 0:
+                time_last_request = time_ns()
+            else:
+                if time_ns() - time_last_request <  request_timeout_ms * 900_000: # 10% leeway
+                    print('request sent too early')
+                    return False
+                time_last_request = time_ns()
+            if client.is_connected():
+                print('request sent after connecting')
+                return False
+            if immediate_fail or client.connect_failed() or not client.is_connecting():
+                print('request sent after failing')
+                return False
+
+            result = interpret_packet(packet)
+            if result is None:
+                print("invalid packet made")
+                return False
+            if result[0] != PacketType.REQUEST:
+                print("should be a request packet")
+                return False
+            if result[1] != version:
+                print('version should match')
+                return False
+        if time_last_request != 0 and time_ns() - time_last_request > request_timeout_ms * 1_100_000:
+            print(f'request taken too long: {(time_ns() - time_last_request) // 1_000_000} ms but expected {request_timeout_ms}')
+            return False
+
+    if client.tick() != []:
+        print(f'request sent after no longer connecting: ')
+        return False
+
+    if should_connect and client.is_connected():
+        connection = client.get_connection_info()
+        if connection is None:
+            print("connection is None after connecting")
+            return False
+        
+        if abs(abs(time_ns() - time_last_request) // 1_000_000 - connection.rtt) >= 1: #must be within 1 ms
+            print(f"rtt not within 10 ms of correct value: {connection.rtt} expected: {abs(time_ns() - time_last_request)// 1_000_000}")
+            return False
+        return True
+
+    if should_connect and (not client.is_connected() or client.connect_failed() or client.is_connecting()):
+        print('should be connected')
+        return False
+    if immediate_fail and (not client.connect_failed() or client.is_connected() or client.is_connecting()):
+        print('should not be connected')
+        return False
+    if not client.connect_failed():
+        print('should have failed')
+        return False
+    
+    if not immediate_fail and num_packets != max_timeouts:
+        print(f'packets sent do not match: {num_packets}, expected {max_timeouts}')
+        return False
+    return True
 
 def test_connecting_to_nothing():
     print('connecting to silent server')
-    server_socket, server_address = create_server()
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "BOB", b'CONNECTING', server_address)
+    assert test_client_connection(0, 5, 100, [])
+    print('passed connecting to silent server')
 
-    
+    print('connecting to server that sends random data')
+    #assert test_client_connection(0, 3, 200, [(100, b'hi', False, False), (200, b'hiiiii from server', False, False), (450, b'byee from server', False, False)])
+    for _ in range(10):
+        print("testing...")
+        attempts = randint(1, 5)
+        timeout = randint(50, 200)
+        version = randint(0, 255)
+        num_responses = randint(0, 10)
+        responses: list[tuple[int, bytes, bool, bool]] = []
+        for _ in range(num_responses):
+            responses.append(create_random_response(attempts, timeout))
+        assert test_client_connection(version, attempts, timeout, responses)
+    print('passed')
+    print('passed connecting to server that sends random data')
 
-    print(f"connection worked: {client.is_connecting()}")
+def create_random_response(attempts: int, timeout: int) -> tuple[int, bytes, bool, bool]:
+    send_time = randint(0, (attempts + 1) * timeout)
+    num_letters = randint(0, 10)
+    random_word = [alphabet[randint(0, len(alphabet) - 1)] for _ in range(num_letters)]
+    random_data = b''
+    for c in random_word:
+        random_data += c.encode()
+    return (send_time, random_data, False, False)
 
-    complete_client_connection(client, server_socket, None, 999999999999999999999)
-    
-    print("connecting to invalid address")
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "BOB", b'CONNECTING', ('', 0))
-    print(f"connection worked: {client.is_connecting()}")
-    complete_client_connection(client, server_socket, None, 999999999999999999999)
-    
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "BOB", b'CONNECTING', server_address)
-    print("connecting to valid address")
-    print(f"connection worked: {client.is_connecting()}")
+def create_accept_response(attempts: int, timeout: int, version: int) -> tuple[int, bytes, bool, bool]:
+    send_time = randint(0, (attempts + 1) * timeout)
+    return (send_time, create_accept_packet(version), True, False)
 
-    complete_client_connection(client, server_socket, create_data_packet(100,100,100,10,10,b'hi'), 50_000_000)
-
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "BOB", b'CONNECTING', server_address)
-    print("connecting to valid address but random data sent back")
-    print(f"connection worked: {client.is_connecting()}")
-
-    complete_client_connection(client, server_socket, b'HELLO, WORLD!!', 50_000_000)
-
+def create_incorrect_version_accept_response(attempts: int, timeout: int, version: int) -> tuple[int, bytes, bool, bool]:
+    send_time = randint(0, (attempts + 1) * timeout)
+    different_version = (version + randint(1, 255)) % 256
+    return (send_time, create_accept_packet(different_version), False, True)
 
 def test_receiving_accept():
     print('connecting to server that will respond with accept')
-    server_socket, server_address = create_server()
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "ALICE", b'HELLO', server_address)
-
-    print(f"connection worked: {client.is_connecting()}")
-
-    complete_client_connection(client, server_socket, create_accept_packet(VERS, VERSION, 100, 10, 1, b'HIIIII FROM SERVER'), 50_000_000)
-    
-    print(f"connected: {client.is_connected()}")
-    print(f"connecting: {client.is_connecting()}")
+    for _ in range(10):
+        print("testing...")
+        attempts = randint(1, 5)
+        timeout = randint(50, 200)
+        version = randint(0, 255)
+        assert test_client_connection(version, attempts, timeout, [create_accept_response(attempts, timeout, version)])
+    print('passed')
 
 def test_receiving_accept_wrong_version():
     print('connecting to server that will respond with an accept with the wrong version')
-    server_socket, server_address = create_server()
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "ALICE", b'HI', server_address)
-
-    print(f"connection worked: {client.is_connecting()}")
-    complete_client_connection(client, server_socket, create_accept_packet(VERS + 1, VERSION, 100, 10, 1, b'HIIIII FROM SERVER'), 50_000_000)
-    print(f"connected: {client.is_connected()}")
-    print(f"connecting: {client.is_connecting()}")
-
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "ALICE", b'HI', server_address)
-    print(f"connection worked: {client.is_connecting()}")
-    complete_client_connection(client, server_socket, create_accept_packet(VERS, VERSION + 1, 100, 10, 1, b'HIIIII FROM SERVER'), 50_000_000)
-    print(f"connected: {client.is_connected()}")
-    print(f"connecting: {client.is_connecting()}")
-
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "ALICE", b'HI', server_address)
-    print(f"connection worked: {client.is_connecting()}")
-    complete_client_connection(client, server_socket, create_accept_packet(VERS + 1, VERSION + 1, 100, 10, 1, b'HIIIII FROM SERVER'), 50_000_000)
-    print(f"connected: {client.is_connected()}")
-    print(f"connecting: {client.is_connecting()}")
-
-    client_socket = create_ordinary_udp_socket(2000, AF_INET)
-    client = ClientConnector(5, client_socket, "ALICE", b'HI', server_address)
-    print(f"connection worked: {client.is_connecting()}")
-    complete_client_connection(client, server_socket, create_accept_packet(VERS, VERSION, 100, 10, 1, b'HIIIII FROM SERVER'), 50_000_000)
-    print(f"connected: {client.is_connected()}")
-    print(f"connecting: {client.is_connecting()}")
+    for _ in range(10):
+        print('testing...')
+        attempts = randint(1, 5)
+        timeout = randint(50, 200)
+        version = randint(0, 255)
+        assert test_client_connection(version, attempts, timeout, [create_incorrect_version_accept_response(attempts, timeout, version)])
+    print('passed')
 
 def main():
     print("----------Starting Client Connection Tests----------")

@@ -1,86 +1,72 @@
-from psychicdata import PsychicData, PsychicDataPrototype
-from iptools import *
-from packet import interpret_packet_safe, PacketType
-from time import time_ns
+from packet import interpret_packet, PacketType, create_data_packet
 
 class ClientConnection:
-    def __init__(self, server: IP_endpoint, rtt_ms: int, relative_server_time_ms: int, timestep_period_ms: int, timestep0: int, server_data: bytes):
-        self.server = server
+    def __init__(self, rtt_ms: int):
         self.rtt = rtt_ms
         self.d_rtt = rtt_ms / 2
         self.average_receive_delay = self.rtt / 2
-        self.relative_server_time = relative_server_time_ms
-        self.timestep_period = timestep_period_ms
-        self.timestep0 = timestep0
-        self.server_data = server_data
 
-        self.lowest_incomplete_timestep: int = 0
-        self.incomplete_timesteps: list[PsychicDataPrototype | None] = []
+        self.lowest_unreceived_message_number: int = 0
+        self.received_messages: list[bool] = []
+        self.received_data_for_user: list[bytes] = []
 
-    def get_current_tick(self) -> int:
-        return (time_ns() // 1_000_000 - self.timestep0 + self.relative_server_time) // self.timestep_period
+        self.connected = True
 
-    def report_received_data(self, data: bytes):
-        interpret_result = interpret_packet_safe(data)
-        if interpret_result is None:
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def report_received(self, packet: bytes):
+        if not self.connected:
             return
-        type = interpret_result[0]
-        info = interpret_result[1]
+        
+        result = interpret_packet(packet)
+        if result is None:
+            return
+        type = result[0]
         match type:
             case PacketType.REQUEST:
-                return # ignore
+                # will not receive request from server -> ignore
+                return
             case PacketType.ACCEPT:
-                return # ignore
+                # may receive multiple accepts from server -> ignore
+                return
             case PacketType.DATA:
-                # [("timestep"("timestamp"("delay"("seg"("totalsegs"("data", FieldType.ENDDATA)]
-                timestep = int(info["timestep"])
-                if timestep > self.get_current_tick():
-                    return # ignore if from a future timestep
-                segment = int(info["seg"])
-                total_segments = int(info["totalsegs"])
-                segment_data = info["data"]
-                self._manage_data(timestep, segment, total_segments, segment_data)
-                timestamp = int(info["timestamp"])
-                delay = int(info["delay"])
-                self._report_delay_received(timestep, timestamp, delay)
-                return # finished managing the data
-            case PacketType.NAK:
-                pass
-
-    def _manage_data(self, timestep: int, segment: int, total_segments: int, data: bytes):
-        if timestep < self.lowest_incomplete_timestep:
-            return # ignore -> already managed
-        relative_timestep = timestep - self.lowest_incomplete_timestep
-        # extend incomplete_timsteps if necessary
-        if relative_timestep >= len(self.incomplete_timesteps):
-            self.incomplete_timesteps.extend([None] * (len(self.incomplete_timesteps) - relative_timestep + 1))
-        # initialise the segment if necessary
-        data_prototype = self.incomplete_timesteps[relative_timestep]
-        if data_prototype is None:
-            data_prototype = PsychicDataPrototype(timestep, total_segments)
-            self.incomplete_timesteps[relative_timestep] = data_prototype
-        # add the segment to the prototype
-        data_prototype.add_segment(segment, data)
-
-    def _report_delay_received(self, timestep: int, timestamp: int, delay: int):
-        # first, calculate the delay of the received packet
-        time_sent = self.timestep0 + timestep * self.timestep_period + timestamp
-        time_received = time_ns() // 1_000_000
-        receive_delay_estimate = time_sent - time_received
-
-        # rtt is estimated by adding the two delays together
-        rtt_estimate = receive_delay_estimate + delay
-
-        # relative server time is estimated by finding the
-
+                ack = result[1]
+                message = result[2]
+                self._report_ack_received(ack)
+                if message is not None:
+                    self._report_message_received(message[0], message[1])
 
     def tick(self):
         pass
 
-    def receive(self) -> list[PsychicData]:
+    def receive(self) -> list[bytes]:
         # Receives new data from the other endpoint
-        return []
+        data = list(self.received_data_for_user)
+        self.received_data_for_user.clear()
+        return data
     
-    def send(self, data: PsychicData):
+    def send(self, message: bytes):
         # Sends data to the other endpoint
         pass
+
+
+    def _report_ack_received(self, ack: int):
+        pass
+
+    def _report_message_received(self, message_number: int, message: bytes):
+        if message_number < self.lowest_unreceived_message_number:
+            return # already received -> ignore
+        relative_message_number = message_number - self.lowest_unreceived_message_number
+        # extend list of unreceived message records if needed
+        if relative_message_number >= len(self.received_messages):
+            self.received_messages.extend([False] * (relative_message_number - len(self.received_messages) + 1))
+        # check if the message has been received
+        if self.received_messages[relative_message_number]:
+            return # already received -> ignore
+        # it is a new message -> mark it as such and add it to the received data
+        self.received_messages[relative_message_number] = True
+        self.received_data_for_user.append(message)
+        # ch
+        while len(self.received_messages) > 0 and self.received_messages[0]:
+            self.received_messages.pop(0)
