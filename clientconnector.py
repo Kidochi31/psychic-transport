@@ -14,6 +14,7 @@ class ClientConnector:
         self.num_timeouts = -1
         self.request_timeout_ms = request_timeout_ms
 
+
         self.failed = False
 
     def is_connected(self) -> bool:
@@ -43,6 +44,7 @@ class ClientConnector:
 
         # currently waiting for server response
         # check timeout
+        
         if self.time_request_sent == 0 or time_ns() >= self.time_request_sent + self.request_timeout_ms * 1_000_000:
             self.num_timeouts += 1
             if self.num_timeouts >= self.max_timeouts:

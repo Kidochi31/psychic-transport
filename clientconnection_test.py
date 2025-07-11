@@ -1,6 +1,7 @@
 from clientconnection import ClientConnection
 from packet import create_accept_packet, create_request_packet, create_data_packet
 from random import randint
+from time import time_ns
 
 alphabet = 'abcdefghijklmnopqrstuvwxyz'
 
@@ -45,6 +46,41 @@ def test_messages(packets_events: list[list[bytes]], expected_receives_after_eve
         assert num_receives == len(expected_receive)
     assert client.receive() is None
 
+def test_message_ack_wait(receive_events: list[tuple[int, bytes]], expect_events: list[tuple[int, bytes]], test_time_ms: int, wait_before_acking: int = 50):
+    # receive_events: [(time_ms, data)], expect_events: [(time_ms, data)]
+    client = ClientConnection(randint(10, 200))
+    client.set_wait_before_acking(wait_before_acking)
+    init_time = time_ns()
+    end_time = init_time + test_time_ms * 1_000_000
+    while time_ns() < end_time:
+        # first receive if any is necessary
+        current_time = time_ns()
+        new_events = list([event for event in receive_events if current_time >= init_time + event[0] * 1_000_000])
+        if any(new_events):
+            for event in new_events:
+                receive_events.remove(event)
+                client.report_received(event[1])
+
+        # tick the client and get data to send
+        time_since_start = time_ns() - init_time
+        data_to_send = client.tick()
+        # check to see if it was expected
+        leeway_ns = 32_000_000 # 32 ms
+        events_completed = list([event for event in expect_events if abs(time_since_start - event[0] * 1_000_000) <= leeway_ns and event[1] in data_to_send])
+        for event in events_completed:
+            data_to_send.remove(event[1])
+            expect_events.remove(event)
+        # all data must be expected
+        # if len(data_to_send) != 0:
+        #     print(time_since_start // 1_000_000)
+        #     print(abs(time_since_start - expect_events[0][0] * 1_000_000) // 1_000_000)
+        #     print(abs(time_since_start - expect_events[0][0] * 1_000_000) <= leeway_ns)
+        #     print(expect_events[0][1])
+        #     print(data_to_send[0])
+
+        assert len(data_to_send) == 0
+    # all expected events must have occurred
+    assert len(expect_events) == 0
 
 
 
@@ -99,11 +135,40 @@ def test_receive_valid_messages():
     test_data_messages([[(1, b'1', True)],[(0,b'0',True)],[(1, b'1', False)]], 2)
     print("-completed testing receiving valid messages")
 
+def test_ack_waiting():
+    print('-testing waiting before sending acks')
+    print('testing nothing being received')
+    test_message_ack_wait([], [], 100)
+    print('testing recieving invalid data or accept/request')
+    test_message_ack_wait([(0, b'hi')], [], 100)
+    test_message_ack_wait([(0, create_accept_packet(100))], [], 100)
+    test_message_ack_wait([(0, create_request_packet(200))], [], 100)
+    print('testing receiving a valid message')
+    test_message_ack_wait([(0, create_data_packet(0, (0, b'hello')))], [(50, create_data_packet(1, None))], 100, 50)
+    test_message_ack_wait([(50, create_data_packet(0, (0, b'hello')))], [(150, create_data_packet(1, None))], 300, 100)
+    print('testing receiving multiple valid messages')
+    test_message_ack_wait([(50, create_data_packet(0, (0, b'hello'))), (100, create_data_packet(0, (1, b'hi')))], [(150, create_data_packet(2, None))], 300, 100)
+    test_message_ack_wait([(0, create_data_packet(0, (0, b'hello'))), (10, create_data_packet(0, (1, b'hi'))), (20, create_data_packet(0, (2, b'hi!')))], [(75, create_data_packet(3, None))], 300, 75)
+    print('testing receiving messages out of order')
+    test_message_ack_wait([(0, create_data_packet(0, (1, b'hello')))], [], 150, 75)
+    test_message_ack_wait([(0, create_data_packet(0, (1, b'hello'))), (50, create_data_packet(0, (0, b'hi')))], [(125, create_data_packet(2, None))], 150, 75)
+    test_message_ack_wait([(0, create_data_packet(0, (2, b'2'))), (25, create_data_packet(0, (1, b'1'))), (50, create_data_packet(0, (0, b'0!')))], [(125, create_data_packet(3, None))], 150, 75)
+    print('testing data packet with no data')
+    test_message_ack_wait([(0, create_data_packet(100, None))], [], 100)
+    print('testing data packet with invalid message numbers')
+    test_message_ack_wait([(0, create_data_packet(0, (2**24-1, b'-1')))], [], 100)
+    test_message_ack_wait([(0, create_data_packet(0, (200, b'200')))], [], 100)
+    print('testing sending already acknowledged data')
+    test_message_ack_wait([(0, create_data_packet(0, (0, b'0'))), (500, create_data_packet(0, (0, b'0')))], [(250, create_data_packet(1, None)), (750, create_data_packet(1, None))], 1000, 250)
+    test_message_ack_wait([(0, create_data_packet(0, (0, b'0'))), (50, create_data_packet(0, (1, b'1'))), (500, create_data_packet(0, (0, b'0')))], [(250, create_data_packet(2, None)), (750, create_data_packet(2, None))], 1000, 250)
+    test_message_ack_wait([(0, create_data_packet(0, (0, b'0'))), (400, create_data_packet(0, (1, b'1'))), (500, create_data_packet(0, (0, b'0')))], [(250, create_data_packet(1, None)), (650, create_data_packet(2, None))], 1000, 250)
+    print('-completed testing waiting before sending acks')
 
 def main():
     print("---------testing client connections")
     test_receive_invalid_messages()
     test_receive_valid_messages()
+    test_ack_waiting()
     print("---------completed testing client connections")
 
 

@@ -49,7 +49,7 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
             if time_last_request == 0:
                 time_last_request = time_ns()
             else:
-                if time_ns() - time_last_request <  request_timeout_ms * 900_000: # 10% leeway
+                if time_ns() - time_last_request <  request_timeout_ms* 1_000_000 - 16_000_000: # 16 ms leeway
                     print('request sent too early')
                     return False
                 time_last_request = time_ns()
@@ -70,7 +70,7 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
             if result[1] != version:
                 print('version should match')
                 return False
-        if time_last_request != 0 and time_ns() - time_last_request > request_timeout_ms * 1_100_000:
+        if time_last_request != 0 and time_ns() - time_last_request > request_timeout_ms * 1_000_000 + 16_000_000:
             print(f'request taken too long: {(time_ns() - time_last_request) // 1_000_000} ms but expected {request_timeout_ms}')
             return False
 
