@@ -3,12 +3,21 @@ from packet import interpret_packet, PacketType, create_data_packet, create_acce
 INIT_MAX_QUEUE = 200
 INIT_WAIT_BEFORE_ACKING = 50
 INIT_MAX_TIMEOUTS = 5
+INIT_RTT_TEMPERATURE = 0.2
+INIT_DEV_RTT_TEMPERATURE = 0.2
+
+TIME_SENT = 0
+ACK_TIMEOUT = 1
+TIMEOUTS = 2
+MESSAGE = 3
 
 class Connection:
     def __init__(self, time_ms: int, version: int, rtt_ms: int):
         self.version = version
-        self.rtt = rtt_ms
-        self.dev_rtt = rtt_ms // 2
+        self.rtt: float = rtt_ms
+        self.rtt_temperature = INIT_RTT_TEMPERATURE
+        self.dev_rtt: float = rtt_ms // 2
+        self.dev_rtt_temperature = INIT_DEV_RTT_TEMPERATURE
         self.average_receive_delay = self.rtt / 2
         self.max_receive_queue = INIT_MAX_QUEUE
         self.max_timeouts = INIT_MAX_TIMEOUTS
@@ -21,7 +30,7 @@ class Connection:
         self.ack_time: int | None = None
 
         self.lowest_unacked_message_number: int = 0
-        self.unacked_messages: list[tuple[int, int, bytes]] = [] # (ack timeout, timeouts, message)
+        self.unacked_messages: list[tuple[int, int, int, bytes]] = [] # (time sent, ack timeout, timeouts, message)
 
         self.send_accept: bool = False
 
@@ -37,6 +46,18 @@ class Connection:
 
     def set_max_timeouts(self, max_timeouts: int):
         self.max_timeouts = max_timeouts
+    
+    def set_rtt_temperature(self, rtt_temperature: float):
+        self.rtt_temperature = rtt_temperature
+    
+    def set_dev_rtt_temperature(self, dev_rtt_temperature: float):
+        self.dev_rtt_temperature = dev_rtt_temperature
+    
+    def get_rtt(self) -> float:
+        return self.rtt
+    
+    def get_dev_rtt(self) -> float:
+        return self.dev_rtt
 
     def is_connected(self) -> bool:
         return self.connected
@@ -95,10 +116,31 @@ class Connection:
     def send(self, message: bytes):
         # Prepares to send data to the other endpoint
         timeout = self.last_tick_time # send immediately on next tick
-        self.unacked_messages.append((timeout, -1, message))
+        self.unacked_messages.append((self.last_tick_time, timeout, -1, message))
+
+    def _report_rtt_estimate(self, rtt: int):
+        self.rtt = rtt * self.rtt_temperature + (1 - self.rtt_temperature) * self.rtt
+        self.dev_rtt = abs(rtt - self.rtt) * self.dev_rtt_temperature + (1 - self.dev_rtt_temperature) * self.dev_rtt
 
     def _report_ack_received(self, ack: int):
-        pass
+        if ack <= self.lowest_unacked_message_number:
+            return # already received ack
+        num_to_ack = ack - self.lowest_unacked_message_number
+        highest_time_sent: int | None = None
+        for _ in range(num_to_ack):
+            if len(self.unacked_messages) == 0:
+                break
+            # remove from unacked messages, and increment the lowest unacked message number
+            self.lowest_unacked_message_number += 1
+            time, _, _, _ = self.unacked_messages.pop(0)
+            # find the highest time a packet was sent (to estimate rtt)
+            if highest_time_sent is None or time > highest_time_sent:
+                highest_time_sent = time
+        if highest_time_sent is None:
+            return
+        # report the rtt found
+        self._report_rtt_estimate(self.last_tick_time - highest_time_sent)
+
 
     def _report_must_send_ack(self):
         # set ack time if there is no expected ack
@@ -132,7 +174,7 @@ class Connection:
             self.lowest_unreceived_message_number += 1
     
     def _calculate_ack_timeout(self) -> int:
-        return self.last_tick_time + (self.rtt + 4 * self.dev_rtt)
+        return int(self.last_tick_time + (self.rtt + 4 * self.dev_rtt))
     
     def _manage_and_get_timeout_packets(self) -> list[bytes]:
         packets_to_send: list[bytes] = []
@@ -140,23 +182,23 @@ class Connection:
 
         # go through all messages and check for timeouts -> if so, prepare to retransmit
         for i, message_info in enumerate(self.unacked_messages):
-            if self.last_tick_time >= message_info[0]:
+            if self.last_tick_time >= message_info[ACK_TIMEOUT]:
                 
                 timeout_messages.append(i)
                 message_number = i + self.lowest_unacked_message_number
-                message = message_info[2]
+                message = message_info[MESSAGE]
                 data = create_data_packet(self.lowest_unreceived_message_number, (message_number, message))
                 packets_to_send.append(data)
         
         # go through all timeout messages, reset timeout, and incremenet number of timeouts
         for i in timeout_messages:
-            _, timeouts, message = self.unacked_messages[i]
+            _, _, timeouts, message = self.unacked_messages[i]
             timeouts += 1
             if timeouts >= self.max_timeouts:
                 # too many timeouts -> close connection
                 self.connected = False
                 return []
-            self.unacked_messages[i] = (self._calculate_ack_timeout(), timeouts, message)
+            self.unacked_messages[i] = (self.last_tick_time, self._calculate_ack_timeout(), timeouts, message)
         
         return packets_to_send
             
