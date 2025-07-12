@@ -1,7 +1,6 @@
-from clientconnection import ClientConnection
+from connection import Connection
 from packet import create_accept_packet, create_request_packet, create_data_packet
 from random import randint
-from time import time_ns
 
 alphabet = 'abcdefghijklmnopqrstuvwxyz'
 
@@ -33,8 +32,8 @@ def test_data_messages(events: list[list[tuple[int, bytes, bool]]], max_queue: i
     test_messages(packet_events, expected_receives_after_event, max_queue)
 
 def test_messages(packets_events: list[list[bytes]], expected_receives_after_event: list[list[tuple[int, bytes]]], max_queue: int = 200):
-    client = ClientConnection(randint(10, 200))
-    client.set_max_queue(max_queue)
+    client = Connection(0, 0, randint(10, 200))
+    client.set_max_receive_queue(max_queue)
     for i, event in enumerate(packets_events):
         for packet in event:
             client.report_received(packet)
@@ -48,41 +47,88 @@ def test_messages(packets_events: list[list[bytes]], expected_receives_after_eve
 
 def test_message_ack_wait(receive_events: list[tuple[int, bytes]], expect_events: list[tuple[int, bytes]], test_time_ms: int, wait_before_acking: int = 50):
     # receive_events: [(time_ms, data)], expect_events: [(time_ms, data)]
-    client = ClientConnection(randint(10, 200))
+    start_time = 0
+    client = Connection(start_time, 0, randint(10, 200))
     client.set_wait_before_acking(wait_before_acking)
-    init_time = time_ns()
-    end_time = init_time + test_time_ms * 1_000_000
-    while time_ns() < end_time:
+
+    current_time = start_time
+    end_time = start_time + test_time_ms
+    while current_time < end_time:
         # first receive if any is necessary
-        current_time = time_ns()
-        new_events = list([event for event in receive_events if current_time >= init_time + event[0] * 1_000_000])
+        new_events = list([event for event in receive_events if current_time >= start_time + event[0]])
         if any(new_events):
             for event in new_events:
                 receive_events.remove(event)
                 client.report_received(event[1])
 
         # tick the client and get data to send
-        time_since_start = time_ns() - init_time
-        data_to_send = client.tick()
+        time_since_start = current_time - start_time
+        data_to_send = client.tick(current_time)
         # check to see if it was expected
-        leeway_ns = 32_000_000 # 32 ms
-        events_completed = list([event for event in expect_events if abs(time_since_start - event[0] * 1_000_000) <= leeway_ns and event[1] in data_to_send])
+        leeway_ms = 1 # 1 ms
+        events_completed = list([event for event in expect_events if abs(time_since_start - event[0]) <= leeway_ms and event[1] in data_to_send])
         for event in events_completed:
             data_to_send.remove(event[1])
             expect_events.remove(event)
         # all data must be expected
         # if len(data_to_send) != 0:
-        #     print(time_since_start // 1_000_000)
-        #     print(abs(time_since_start - expect_events[0][0] * 1_000_000) // 1_000_000)
-        #     print(abs(time_since_start - expect_events[0][0] * 1_000_000) <= leeway_ns)
+        #     print(time_since_start)
+        #     print(abs(time_since_start - expect_events[0][0]))
+        #     print(abs(time_since_start - expect_events[0][0]) <= leeway_ms)
         #     print(expect_events[0][1])
         #     print(data_to_send[0])
 
         assert len(data_to_send) == 0
+        current_time += 1
     # all expected events must have occurred
     assert len(expect_events) == 0
 
+def test_unacknowledged_retransmissions(send_events: list[tuple[int, bytes]], expect_events: list[tuple[int, bytes]], test_time_ms: int, rtt: int, max_timeouts: int, fail_time: int | None):
+    # send_events: [(time_ms, message)], expect_events: [(time_ms, data)]
+    start_time = 0
+    client = Connection(start_time, 0, rtt)
+    client.set_max_timeouts(max_timeouts)
 
+    current_time = start_time
+    end_time = start_time + test_time_ms
+    while current_time < end_time:
+        # first send if any is necessary
+        new_events = list([event for event in send_events if current_time >= start_time + event[0]])
+        if any(new_events):
+            for event in new_events:
+                send_events.remove(event)
+                client.send(event[1])
+
+        # tick the client and get data to send
+        time_since_start = current_time - start_time
+        data_to_send = client.tick(current_time)
+        # check to see if it was expected
+        leeway_ms = 1 # 1 ms
+        events_completed = list([event for event in expect_events if abs(time_since_start - event[0]) <= leeway_ms and event[1] in data_to_send])
+        for event in events_completed:
+            data_to_send.remove(event[1])
+            expect_events.remove(event)
+        # all data must be expected
+        # if len(data_to_send) != 0:
+        #     print(time_since_start )
+        #     print(abs(time_since_start - expect_events[0][0]))
+        #     print(abs(time_since_start - expect_events[0][0]) <= leeway_ns)
+        #     print(expect_events[0][1])
+        #     print(data_to_send[0])
+
+        assert len(data_to_send) == 0, f"{data_to_send} at {current_time}, still expecting {expect_events}"
+
+        if fail_time is not None and current_time >= fail_time:
+            assert not client.is_connected(), f"at {current_time}, still expecting {expect_events}"
+            assert all([event[0] > current_time for event in expect_events]), f"{expect_events}"
+            return
+        if fail_time is not None and current_time < fail_time:
+            assert client.is_connected(), f"at {current_time}"
+
+        
+        current_time += 1
+    # all expected events must have occurred
+    assert all([event[0] > current_time for event in expect_events]), f"{expect_events}"
 
 def test_receive_invalid_messages():
     print("-testing receiving invalid messages")
@@ -139,13 +185,16 @@ def test_ack_waiting():
     print('-testing waiting before sending acks')
     print('testing nothing being received')
     test_message_ack_wait([], [], 100)
-    print('testing recieving invalid data or accept/request')
+    print('testing recieving invalid data or accept')
     test_message_ack_wait([(0, b'hi')], [], 100)
     test_message_ack_wait([(0, create_accept_packet(100))], [], 100)
-    test_message_ack_wait([(0, create_request_packet(200))], [], 100)
+    print('testing receiving request')
+    test_message_ack_wait([(0, create_request_packet(200))], [(0, create_accept_packet(0))], 100)
     print('testing receiving a valid message')
     test_message_ack_wait([(0, create_data_packet(0, (0, b'hello')))], [(50, create_data_packet(1, None))], 100, 50)
     test_message_ack_wait([(50, create_data_packet(0, (0, b'hello')))], [(150, create_data_packet(1, None))], 300, 100)
+    print('testing immediately acknowledging if set to do so')
+    test_message_ack_wait([(0, create_data_packet(0, (0, b'hello')))], [(0, create_data_packet(1, None))], 100, 0)
     print('testing receiving multiple valid messages')
     test_message_ack_wait([(50, create_data_packet(0, (0, b'hello'))), (100, create_data_packet(0, (1, b'hi')))], [(150, create_data_packet(2, None))], 300, 100)
     test_message_ack_wait([(0, create_data_packet(0, (0, b'hello'))), (10, create_data_packet(0, (1, b'hi'))), (20, create_data_packet(0, (2, b'hi!')))], [(75, create_data_packet(3, None))], 300, 75)
@@ -164,11 +213,50 @@ def test_ack_waiting():
     test_message_ack_wait([(0, create_data_packet(0, (0, b'0'))), (400, create_data_packet(0, (1, b'1'))), (500, create_data_packet(0, (0, b'0')))], [(250, create_data_packet(1, None)), (650, create_data_packet(2, None))], 1000, 250)
     print('-completed testing waiting before sending acks')
 
+def calculate_ack_time(rtt: int, dev_rtt: int) -> int:
+        return rtt + 4 * dev_rtt
+
+def create_retransmission_test_without_acks(times: list[int], rtt: int, max_timeouts: int, test_time: int):
+    times.sort()
+    send_events = [(time, generate_random_data()) for time in times]
+    ack_time = calculate_ack_time(rtt, rtt // 2)
+    expect_events: list[tuple[int, bytes]] = []
+    fail_time: int | None = None
+    for message_number, (time, message) in enumerate(send_events):
+        this_fail_time = time + ack_time * max_timeouts
+        if fail_time is None or this_fail_time < fail_time:
+            fail_time = this_fail_time
+        for n in range(max_timeouts):
+            expect_events.append((time + n * ack_time, create_data_packet(0, (message_number, message))))
+    test_unacknowledged_retransmissions(send_events, expect_events, test_time, rtt, max_timeouts, fail_time)
+
+
+def test_retransmissions_without_acks():
+    print("-testing retransmissions without acks")
+    print('testing no messages sent')
+    test_unacknowledged_retransmissions([], [], 100, 10, 5, None)
+    print ('testing one message sent')
+    test_unacknowledged_retransmissions([(0, b'0')], [(0, create_data_packet(0, (0, b'0')))], 50, 10, 1, calculate_ack_time(10, 5))
+    test_unacknowledged_retransmissions([(10, b'10')], [(10, create_data_packet(0, (0, b'10')))], 100, 30, 1, 10 + calculate_ack_time(30, 15))
+    test_unacknowledged_retransmissions([(0, b'0')], [(0, create_data_packet(0, (0, b'0'))), (calculate_ack_time(10, 5), create_data_packet(0, (0, b'0')))], 100, 10, 2, 2 * calculate_ack_time(10, 5))
+    test_unacknowledged_retransmissions([(0, b'0')], [(0, create_data_packet(0, (0, b'0'))),
+                                                      (calculate_ack_time(10, 5), create_data_packet(0, (0, b'0'))),
+                                                      (2 * calculate_ack_time(10, 5), create_data_packet(0, (0, b'0')))], 200, 10, 3, 3 * calculate_ack_time(10, 5))
+    create_retransmission_test_without_acks([0], 10, 5, 500)
+    create_retransmission_test_without_acks([10], 30, 10, 1000)
+    print ('testing multiple message sent')
+    test_unacknowledged_retransmissions([(0, b'0'), (1, b'1')], [(0, create_data_packet(0, (0, b'0'))), (1, create_data_packet(0, (1, b'1')))], 50, 10, 1, calculate_ack_time(10, 5))
+    test_unacknowledged_retransmissions([(0, b'0'), (1, b'1')], [(0, create_data_packet(0, (0, b'0'))), (1, create_data_packet(0, (1, b'1'))), (calculate_ack_time(10, 5), create_data_packet(0, (0, b'0'))), (1 + calculate_ack_time(10, 5), create_data_packet(0, (1, b'1')))], 50, 10, 2, 2 * calculate_ack_time(10, 5))
+    create_retransmission_test_without_acks([0, 10, 20], 10, 5, 500)
+    create_retransmission_test_without_acks([0, 1, 2, 30, 100, 500], 30, 10, 1000)
+    print("-completed testing retransmissions without acks")
+
 def main():
     print("---------testing client connections")
     test_receive_invalid_messages()
     test_receive_valid_messages()
     test_ack_waiting()
+    test_retransmissions_without_acks()
     print("---------completed testing client connections")
 
 

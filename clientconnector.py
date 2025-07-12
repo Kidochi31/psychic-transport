@@ -1,19 +1,18 @@
-from clientconnection import ClientConnection
+from connection import Connection
 from packet import interpret_packet, PacketType, create_request_packet
-from time import time_ns
 
-init_request_timeout_ns = 100_000_000
 
 class ClientConnector:
-    def __init__(self, version: int, max_timeouts: int, request_timeout_ms: int):
-        self.connection_info:  ClientConnection | None= None
+    def __init__(self, time_ms: int, version: int, max_timeouts: int, request_timeout_ms: int):
+        self.connection_info:  Connection | None= None
         self.version = version
 
-        self.time_request_sent: int = 0
+        self.time_request_sent: int | None = 0
         self.max_timeouts = max_timeouts
-        self.num_timeouts = -1
+        self.num_timeouts: int = -1
         self.request_timeout_ms = request_timeout_ms
 
+        self.last_tick_time: int = time_ms
 
         self.failed = False
 
@@ -26,7 +25,7 @@ class ClientConnector:
     def is_connecting(self) -> bool:
         return not self.is_connected() and not self.connect_failed()
         
-    def get_connection_info(self) -> ClientConnection | None:
+    def get_connection_info(self) -> Connection | None:
         return self.connection_info
 
     def report_receive(self, packet: bytes) -> None:
@@ -37,7 +36,8 @@ class ClientConnector:
             self._manage_accept_packet(result[1])
         # otherwise, ignore packet
 
-    def tick(self) -> list[bytes]:
+    def tick(self, time_ms: int) -> list[bytes]:
+        self.last_tick_time = time_ms
         # Ticks the client forward, returns data to be sent
         if self.connection_info is not None or self.failed:
             return []
@@ -45,14 +45,14 @@ class ClientConnector:
         # currently waiting for server response
         # check timeout
         
-        if self.time_request_sent == 0 or time_ns() >= self.time_request_sent + self.request_timeout_ms * 1_000_000:
+        if self.time_request_sent is None or time_ms >= self.time_request_sent + self.request_timeout_ms:
             self.num_timeouts += 1
             if self.num_timeouts >= self.max_timeouts:
                 # timeout
                 self.failed = True
                 return []
             # resend
-            return [self._send_request_to_server()]
+            return [self._send_request_to_server(time_ms)]
         # do nothing
         return []
 
@@ -61,10 +61,13 @@ class ClientConnector:
         if version != self.version:
             self.failed = True
             return
+        if self.time_request_sent is None:
+            self.failed = True
+            return
         
-        rtt_ms = (time_ns() - self.time_request_sent) // 1_000_000
-        self.connection_info = ClientConnection(rtt_ms)
+        rtt_ms = self.last_tick_time - self.time_request_sent
+        self.connection_info = Connection(self.last_tick_time, self.version, rtt_ms)
     
-    def _send_request_to_server(self) -> bytes:
-        self.time_request_sent = time_ns()
+    def _send_request_to_server(self, time: int) -> bytes:
+        self.time_request_sent = time
         return create_request_packet(self.version)

@@ -1,5 +1,4 @@
 from clientconnector import ClientConnector
-from time import time_ns
 from packet import *
 from random import randint
 
@@ -7,7 +6,8 @@ alphabet = 'abcdefghijklmnopqrstuvwxyz'
 
 def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: int, server_responses: list[tuple[int, bytes, bool, bool]]) -> bool:
     # server_responses: (delay_ms, data, should_connect, immediate_fail)
-    client = ClientConnector(version, max_timeouts, request_timeout_ms)
+    start_time = 0
+    client = ClientConnector(start_time, version, max_timeouts, request_timeout_ms)
     if not client.is_connecting():
         print('should be connecting at start')
         return False
@@ -17,7 +17,7 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
     if client.connect_failed():
         print('should not be failed at start')
 
-    start_time = time_ns()
+    current_time = start_time
     num_packets = 0
     time_last_request = 0
     should_connect = False
@@ -31,7 +31,6 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
             print('should have failed')
             return False
 
-        current_time = time_ns()
         new_responses = list([response for response in server_responses if current_time >= start_time + response[0] * 1_000_000])
         if any(new_responses):
             for response in new_responses:
@@ -40,19 +39,19 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
                 should_connect = response[2]
                 immediate_fail = response[3]
         
-        data_to_send = client.tick()
+        data_to_send = client.tick(current_time)
         for packet in data_to_send:
             num_packets += 1
             if num_packets > max_timeouts:
                 print('too many requests')
                 return False
             if time_last_request == 0:
-                time_last_request = time_ns()
+                time_last_request = current_time
             else:
-                if time_ns() - time_last_request <  request_timeout_ms* 1_000_000 - 16_000_000: # 16 ms leeway
+                if current_time - time_last_request <  request_timeout_ms - 1: # 1 ms leeway
                     print('request sent too early')
                     return False
-                time_last_request = time_ns()
+                time_last_request = current_time
             if client.is_connected():
                 print('request sent after connecting')
                 return False
@@ -70,11 +69,12 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
             if result[1] != version:
                 print('version should match')
                 return False
-        if time_last_request != 0 and time_ns() - time_last_request > request_timeout_ms * 1_000_000 + 16_000_000:
-            print(f'request taken too long: {(time_ns() - time_last_request) // 1_000_000} ms but expected {request_timeout_ms}')
+        if time_last_request != 0 and current_time - time_last_request > request_timeout_ms + 1:
+            print(f'request taken too long: {(current_time - time_last_request)} ms but expected {request_timeout_ms}')
             return False
+        current_time += 1
 
-    if client.tick() != []:
+    if client.tick(current_time) != []:
         print(f'request sent after no longer connecting: ')
         return False
 
@@ -84,8 +84,8 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
             print("connection is None after connecting")
             return False
         
-        if abs(abs(time_ns() - time_last_request) // 1_000_000 - connection.rtt) >= 1: #must be within 1 ms
-            print(f"rtt not within 10 ms of correct value: {connection.rtt} expected: {abs(time_ns() - time_last_request)// 1_000_000}")
+        if abs(abs(current_time - time_last_request) - connection.rtt) >= 1: #must be within 1 ms
+            print(f"rtt not within 10 ms of correct value: {connection.rtt} expected: {abs(current_time - time_last_request)}")
             return False
         return True
 
