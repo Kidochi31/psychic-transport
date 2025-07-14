@@ -7,13 +7,15 @@ from time import perf_counter_ns
 from select import select
 from packet import PacketType, interpret_packet, create_accept_packet
 from threading import Lock
+from holepuncher import HolePuncher
 
 
 class PsychicServer:
-    def __init__(self, port: int = 0, family: AddressFamily = AF_INET, ack_delay_ns: int = 500_000_000):
+    def __init__(self, port: int = 0, family: AddressFamily = AF_INET, hole_punch_timeout: int = 3_000_000_000,  ack_delay_ns: int = 500_000_000):
         self.socket: socket = create_ordinary_udp_socket(port, family)
         self.client_endpoints: list[IP_endpoint] = []
         self.connections: list[Connection] = []
+        self.hole_puncher: HolePuncher = HolePuncher(hole_punch_timeout, 5)
         self.stun: ParallelStun | None = None
         self.ack_delay_ns: int = ack_delay_ns
 
@@ -23,6 +25,12 @@ class PsychicServer:
         self.lock: Lock = Lock()
         self.closed = False
     
+    def stun_in_progress(self) -> bool:
+        with self.lock:
+            if self.closed or self.stun is None:
+                return False
+            return self.stun.stun_in_progress()
+
     def get_local_endpoint(self) -> IP_endpoint | None:
         with self.lock:
             if self.closed:
@@ -34,6 +42,30 @@ class PsychicServer:
             if self.closed:
                 return None
             return self.socket.family
+
+    def stop_hole_punch(self, target: IP_endpoint):
+        with self.lock:
+            if self.closed:
+                return
+            endpoint = get_canonical_endpoint(target, self.socket.family)
+            if endpoint is None:
+                return
+            self.hole_puncher.stop_hole_punch(endpoint)
+
+    def get_hole_punch_fails(self) -> list[IP_endpoint]:
+        with self.lock:
+            if self.closed:
+                return []
+            return self.hole_puncher.get_fails()
+
+    def hole_punch(self, target: IP_endpoint):
+        with self.lock:
+            if self.closed:
+                return
+            endpoint = get_canonical_endpoint(target, self.socket.family)
+            if endpoint is None or endpoint in self.client_endpoints:
+                return
+            self.hole_puncher.hole_punch(endpoint)
 
     def disconnect(self, client: IP_endpoint):
         with self.lock:
@@ -72,6 +104,7 @@ class PsychicServer:
             self.client_endpoints.append(address)
             self.connections.append(new_connection)
             self.new_connections.append(address)
+            self.hole_puncher.stop_hole_punch(address)
 
     def _report_receive(self, data: bytes, address: IP_endpoint):
         if self.stun is not None and address == self.stun.get_current_stun_server():
@@ -87,9 +120,10 @@ class PsychicServer:
     def _tick_all(self) -> list[tuple[bytes, IP_endpoint]]:
         send_data: list[tuple[bytes, IP_endpoint]] = []
         if self.stun is not None and self.stun.stunning:
+            stun_data = self.stun.tick(perf_counter_ns())
             server = self.stun.get_current_stun_server()
             if server is not None:
-                send_data.extend([(data, server) for data in self.stun.tick(perf_counter_ns())])
+                send_data.extend([(data, server) for data in stun_data])
         # send accept data for any new connections
         send_data.extend([(create_accept_packet(0), endpoint) for endpoint in self.new_connections])
         
@@ -103,6 +137,9 @@ class PsychicServer:
         # remove any endpoints that are disconnected
         for endpoint in remove_connections:
             self._disconnect(endpoint)
+
+        # tick the holepuncher
+        send_data.extend(self.hole_puncher.tick(perf_counter_ns()))
         
         return send_data
 
@@ -123,7 +160,10 @@ class PsychicServer:
                 rl, _, _ = select([self.socket], [], [], 0)
             send_data = self._tick_all()
             for data, destination in send_data:
-                self.socket.sendto(data, destination)
+                try:
+                    self.socket.sendto(data, destination)
+                except:
+                    pass
             new_connections = self.new_connections.copy()
             disconnections = self.disconnections.copy()
             self.new_connections.clear()

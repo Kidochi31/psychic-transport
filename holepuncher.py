@@ -1,117 +1,49 @@
-from socket import socket, AddressFamily, SHUT_RDWR, SOCK_STREAM, AF_INET6, IPPROTO_IPV6, IPV6_V6ONLY
-import traceback
-from threading import Thread, Lock
-from common import make_socket_reusable, debug_print
 from iptools import IP_endpoint
 
-HOLEPUNCH_TIMEOUT = 10
+TARGET = 0
+NEXT_TIMEOUT = 1
+NUM_TIMEOUTS = 2
 
 class HolePuncher:
-    # local_endpoint: IP_endpoint - the endpoint the listener is bound to
-    # family: AddressFamily
-    # lock: Lock
-    # hole_punchers: Dictionary[IP_endpoint, socket] - the dictionary of connecting TCP sockets and associated thread to the remote endpoint
-    # hole_punch_fails: list[IP_endpoint] - a list of remote endpoints that could not be connected to (and have yet to be managed)
-    # hole_punch_successes: list[socket] - a list of sockets that have succeeded in connecting (and have yet to be managed)
-    
-    def __init__(self, local_endpoint: IP_endpoint, family: AddressFamily):
-        self.local_endpoint = local_endpoint
-        self.family = family
-        self.lock = Lock()
-        self.hole_punchers:dict[IP_endpoint, socket] = {} 
-        self.fails:set[IP_endpoint] = set()
-        self.successes:set[socket] = set()
+    def __init__(self, timeout: int, max_timeouts: int):
+        self.timeout = timeout
+        self.max_timeouts = max_timeouts
+        self.targets: list[IP_endpoint] = []
+        self.hole_punchers : list[tuple[IP_endpoint, int, int]] = [] # (endpoint, next timeout, num timeouts)
+        self.fails: list[IP_endpoint] = []
 
-    def _on_success(self, endpoint: IP_endpoint):
-        with self.lock:
-            if endpoint in self.hole_punchers.keys():
-                socket = self.hole_punchers.pop(endpoint)
-                self.successes.add(socket)
-    
-    def _on_fail(self, endpoint: IP_endpoint):
-        with self.lock:
-            if endpoint in self.hole_punchers.keys():
-                hp_socket = self.hole_punchers.pop(endpoint)
-                self.try_close(hp_socket, "Closing Hole Puncher Exception")
-                self.fails.add(endpoint)
-    
-    def remove_hole_puncher(self, endpoint: IP_endpoint):
-        with self.lock:
-            if endpoint in self.hole_punchers.keys():
-                hp_socket = self.hole_punchers.pop(endpoint)
-                self.try_close(hp_socket, "Closing Hole Puncher Exception")
-            if endpoint in self.fails:
-                self.fails.remove(endpoint)
+        self.last_tick_time = 0
 
-    def hole_punch(self, endpoint: IP_endpoint, timeout: float | None):
-        with self.lock:
-            if endpoint in self.hole_punchers:
-                debug_print(f"already hole puncher!")
-                return
-            if endpoint in self.fails:
-                self.fails.remove(endpoint)
-            try:
-                hp_socket = self.create_hole_puncher_socket(self.local_endpoint, self.family)
-            except Exception:
-                self.fails.add(endpoint)
-                return
-            self.hole_punchers[endpoint] = hp_socket
-            hp_thread = Thread(target=self.hole_punch_thread, args=(hp_socket, endpoint, timeout))
-            hp_thread.start()
-    
-    def take_successes(self) -> list[socket]:
-        with self.lock:
-            successes = list(self.successes)
-            self.successes.clear()
-            return successes
-        
-    def take_fails(self) -> list[IP_endpoint]:
-        with self.lock:
-            fails = list(self.fails)
-            self.fails.clear()
-            return fails
-        
-    def clear(self):
-        with self.lock:
-            for endpoint in list(self.hole_punchers.keys()):
-                hp_socket = self.hole_punchers.pop(endpoint)
-                self.try_close(hp_socket, "Closing Hole Puncher Exception")
-            for socket in self.successes:
-                self.try_close(socket, "Closing Hole Puncher Exception", shutdown=True)
-            self.hole_punchers.clear()
-            self.successes.clear()
-            self.fails.clear()
+    def get_fails(self) -> list[IP_endpoint]:
+        fails = self.fails.copy()
+        self.fails.clear()
+        return fails
 
-    def try_close(self, socket: socket, exception_log_name: str, shutdown:bool=False):
-            if shutdown:
-                try:
-                    socket.shutdown(SHUT_RDWR)
-                except Exception:
-                    debug_print(f"At shutdown {exception_log_name}: {traceback.format_exc()}")
-            try:
-                socket.close()
-            except Exception:
-                debug_print(f"At close {exception_log_name}: {traceback.format_exc()}")
+    def stop_hole_punch(self, endpoint: IP_endpoint):
+        if endpoint not in self.targets:
+            return
+        index = self.targets.index(endpoint)
+        self.targets.pop(index)
+        self.hole_punchers.pop(index)
 
-    def create_hole_puncher_socket(self, local_endpoint: IP_endpoint, family: AddressFamily) -> socket:
-        hp_socket = socket(family, SOCK_STREAM)
-        if family == AF_INET6:
-            hp_socket.setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 0)
-        make_socket_reusable(hp_socket)
-        hp_socket.bind(local_endpoint) # bind the socket
-        return hp_socket
+    def hole_punch(self, endpoint: IP_endpoint):
+        if endpoint in self.targets:
+            self.stop_hole_punch(endpoint)
+        self.targets.append(endpoint)
+        self.hole_punchers.append((endpoint, self.last_tick_time, -1))
 
-    def hole_punch_thread(self, hp_socket: socket, endpoint: IP_endpoint, timeout: float | None):
-        try:
-            if timeout is None or timeout <= 0:
-                timeout = None
-            hp_socket.settimeout(20)
-            print("starting hole punch")
-            hp_socket.connect(endpoint)
-            print("success")
-            hp_socket.settimeout(None)
-            self._on_success(endpoint)
-        except Exception:
-            debug_print(f"Connect Exception: {traceback.format_exc()}")
-            self._on_fail(endpoint)
-        debug_print("stopping hole punch thread")
+    def tick(self, time: int) -> list[tuple[bytes, IP_endpoint]]:
+        send_data : list[tuple[bytes, IP_endpoint]] = []
+        self.last_tick_time = time
+        timeouts = [hole_puncher for hole_puncher in self.hole_punchers if time >= hole_puncher[NEXT_TIMEOUT]]
+        for target, _, num_timeouts in timeouts:
+            num_timeouts += 1
+            if num_timeouts >= self.max_timeouts:
+                self.fails.append(target)
+                self.stop_hole_punch(target)
+                continue
+            # set new timeout and add send data
+            index = self.targets.index(target)
+            self.hole_punchers[index] = (target, time + self.timeout, num_timeouts)
+            send_data.append((b'', target))
+        return send_data

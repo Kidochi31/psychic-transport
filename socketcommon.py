@@ -69,7 +69,8 @@ def debug_print(text: Any):
         previous_printed_text = f"{string} x{str(previous_amount)}"
         print(previous_printed_text, end='\r')
     else:
-        print(f"{previous_printed_text + "\n" if previous_printed_text is not None else ""}{string}", end='\r')
+        new_line = '\n'
+        print(f"{previous_printed_text + new_line if previous_printed_text is not None else ''}{string}", end='\r')
         previous_amount = 1
         previous_text = string
         previous_printed_text = string

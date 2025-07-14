@@ -127,7 +127,6 @@ class Connection:
     def _report_rtt_estimate(self, rtt: int):
         self.rtt = rtt * self.rtt_temperature + (1 - self.rtt_temperature) * self.rtt
         self.dev_rtt = abs(rtt - self.rtt) * self.dev_rtt_temperature + (1 - self.dev_rtt_temperature) * self.dev_rtt
-        print(f"measured rtt: {rtt}, estimate: {self.rtt}")
 
     def _manage_duplicate_ack(self):
         if len(self.unacked_messages) == 0: # if no messages are being sent -> ignore

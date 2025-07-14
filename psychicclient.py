@@ -21,6 +21,12 @@ class PsychicClient:
 
         self.closed = False
     
+    def stun_in_progress(self) -> bool:
+        with self.lock:
+            if self.closed or self.stun is None:
+                return False
+            return self.stun.stun_in_progress()
+
     def get_local_endpoint(self) -> IP_endpoint | None:
         with self.lock:
             if self.closed:
@@ -91,14 +97,14 @@ class PsychicClient:
             if possible_connection is not None:
                 server = self.connector[1]
                 self.connector = None # remove connector
-                print("new connection managing!")
                 self.connection = (possible_connection, server)
             elif self.connector[0].connect_failed():
                 self.connector = None
         if self.stun is not None and self.stun.stunning:
+            stun_data = self.stun.tick(perf_counter_ns())
             server = self.stun.get_current_stun_server()
             if server is not None:
-                send_data.extend([(data, server) for data in self.stun.tick(perf_counter_ns())])
+                send_data.extend([(data, server) for data in stun_data])
         if self.connection is not None:
             send_data.extend([(data, self.connection[1]) for data in self.connection[0].tick(perf_counter_ns())])
             if not self.connection[0].is_connected():
@@ -122,7 +128,10 @@ class PsychicClient:
                 rl, _, _ = select([self.socket], [], [], 0)
             send_data = self._tick_all()
             for data, destination in send_data:
-                self.socket.sendto(data, destination)
+                try:
+                    self.socket.sendto(data, destination)
+                except:
+                    pass
         
     def send(self, message: bytes):
         with self.lock:
