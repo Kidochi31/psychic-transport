@@ -7,7 +7,7 @@ alphabet = 'abcdefghijklmnopqrstuvwxyz'
 def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: int, server_responses: list[tuple[int, bytes, bool, bool]]) -> bool:
     # server_responses: (delay_ms, data, should_connect, immediate_fail)
     start_time = 0
-    client = ClientConnector(start_time, version, max_timeouts, request_timeout_ms)
+    client = ClientConnector(start_time, version, max_timeouts, request_timeout_ms, 50_000_000, 50_000_000)
     if not client.is_connecting():
         print('should be connecting at start')
         return False
