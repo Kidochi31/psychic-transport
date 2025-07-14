@@ -96,3 +96,35 @@ def get_canonical_endpoint_with_port(endpoint: IP_endpoint, port: int, family: A
     else:
         endpoint = (endpoint[0], port, endpoint[2], endpoint[3])
     return get_canonical_endpoint(endpoint, family)
+
+def endpoint_to_string(endpoint: IP_endpoint) -> str:
+    if len(endpoint) == 2:
+        return f"{endpoint[0]}:{endpoint[1]}"
+    else:
+        return f"[{endpoint[0]}]:{endpoint[1]}"
+
+def string_to_endpoint(text: str) -> IP_endpoint | None:
+    text = text.strip()
+    if len(text) == 0:
+        return None
+    if text[0] == "[":
+        # ipv6
+        text = text[1:]
+        split = text.split("]:", maxsplit=1)
+        if len(split) < 2:
+            return None
+        address, port = split
+        if not port.isdigit():
+            return None
+        port = int(port)
+        return (address, port, 0, 0)
+    else:
+        # ipv4
+        split = text.split(":", maxsplit=1)
+        if len(split) < 2:
+            return None
+        address, port = split
+        if not port.isdigit():
+            return None
+        port = int(port)
+        return (address, port)

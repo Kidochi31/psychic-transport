@@ -1,4 +1,4 @@
-from socket import * # type: ignore
+from socket import SOCK_DGRAM, IPPROTO_IPV6, IPV6_V6ONLY, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST
 from iptools import *
 from typing import Any
 

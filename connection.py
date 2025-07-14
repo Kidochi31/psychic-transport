@@ -1,18 +1,19 @@
 from packet import interpret_packet, PacketType, create_data_packet, create_accept_packet
 
 INIT_MAX_QUEUE = 200
-INIT_WAIT_BEFORE_ACKING = 50
 INIT_MAX_TIMEOUTS = 5
 INIT_RTT_TEMPERATURE = 0.2
 INIT_DEV_RTT_TEMPERATURE = 0.2
+INIT_DUPLICATE_ACKS_BEFORE_RETRANSMISSION = 3
 
-TIME_SENT = 0
-ACK_TIMEOUT = 1
-TIMEOUTS = 2
-MESSAGE = 3
+FIRST_SEND_TIME = 0
+TIME_SENT = 1
+ACK_TIMEOUT = 2
+TIMEOUTS = 3
+MESSAGE = 4
 
 class Connection:
-    def __init__(self, time_ms: int, version: int, rtt_ms: int):
+    def __init__(self, time_ms: int, version: int, rtt_ms: int, wait_before_acking: int):
         self.version = version
         self.rtt: float = rtt_ms
         self.rtt_temperature = INIT_RTT_TEMPERATURE
@@ -26,11 +27,13 @@ class Connection:
         self.received_messages: list[bool] = []
         self.received_data_for_user: list[tuple[int, bytes]] = []
         
-        self.wait_before_acking: int = INIT_WAIT_BEFORE_ACKING
+        self.wait_before_acking: int = wait_before_acking
         self.ack_time: int | None = None
 
         self.lowest_unacked_message_number: int = 0
-        self.unacked_messages: list[tuple[int, int, int, bytes]] = [] # (time sent, ack timeout, timeouts, message)
+        self.unacked_messages: list[tuple[int, int, int, int, bytes]] = [] # (first send time, time sent, ack timeout, timeouts, message)
+        self.duplicate_acks: int | None = None
+        self.duplicate_acks_before_retransmission = INIT_DUPLICATE_ACKS_BEFORE_RETRANSMISSION
 
         self.send_accept: bool = False
 
@@ -53,6 +56,9 @@ class Connection:
     def set_dev_rtt_temperature(self, dev_rtt_temperature: float):
         self.dev_rtt_temperature = dev_rtt_temperature
     
+    def set_duplicate_acks_before_retransmission(self, duplicate_acks_before_retransmission: int):
+        self.duplicate_acks_before_retransmission = duplicate_acks_before_retransmission
+
     def get_rtt(self) -> float:
         return self.rtt
     
@@ -62,7 +68,7 @@ class Connection:
     def is_connected(self) -> bool:
         return self.connected
 
-    def report_received(self, packet: bytes):
+    def report_receive(self, packet: bytes):
         if not self.connected:
             return
         
@@ -116,15 +122,34 @@ class Connection:
     def send(self, message: bytes):
         # Prepares to send data to the other endpoint
         timeout = self.last_tick_time # send immediately on next tick
-        self.unacked_messages.append((self.last_tick_time, timeout, -1, message))
+        self.unacked_messages.append((self.last_tick_time, self.last_tick_time, timeout, -1, message))
 
     def _report_rtt_estimate(self, rtt: int):
         self.rtt = rtt * self.rtt_temperature + (1 - self.rtt_temperature) * self.rtt
         self.dev_rtt = abs(rtt - self.rtt) * self.dev_rtt_temperature + (1 - self.dev_rtt_temperature) * self.dev_rtt
+        print(f"measured rtt: {rtt}, estimate: {self.rtt}")
+
+    def _manage_duplicate_ack(self):
+        if len(self.unacked_messages) == 0: # if no messages are being sent -> ignore
+            return
+        if self.last_tick_time >= self.unacked_messages[0][TIME_SENT] + self.rtt: # if it's been at least 1 rtt since it was sent -> duplicate
+            # increment number of duplicate acks
+            if self.duplicate_acks is None:
+                self.duplicate_acks = 1
+            else:
+                self.duplicate_acks += 1
+            # check if reached threshold (fast retransmit)
+            if self.duplicate_acks >= self.duplicate_acks_before_retransmission:
+                # reset duplicate acks and make the message retransmit immediately (fast retransmit)
+                self.duplicate_acks = None
+                self.unacked_messages[0] = (self.unacked_messages[0][FIRST_SEND_TIME], self.last_tick_time, self.last_tick_time, self.unacked_messages[0][TIMEOUTS], self.unacked_messages[0][MESSAGE])
 
     def _report_ack_received(self, ack: int):
+        if ack == self.lowest_unacked_message_number:
+            self._manage_duplicate_ack()
         if ack <= self.lowest_unacked_message_number:
             return # already received ack
+        
         num_to_ack = ack - self.lowest_unacked_message_number
         highest_time_sent: int | None = None
         for _ in range(num_to_ack):
@@ -132,12 +157,14 @@ class Connection:
                 break
             # remove from unacked messages, and increment the lowest unacked message number
             self.lowest_unacked_message_number += 1
-            time, _, _, _ = self.unacked_messages.pop(0)
-            # find the highest time a packet was sent (to estimate rtt)
-            if highest_time_sent is None or time > highest_time_sent:
+            time, _, _, _, _ = self.unacked_messages.pop(0)
+            # find the lowest time a packet was sent (to estimate rtt)
+            if highest_time_sent is None or time < highest_time_sent:
                 highest_time_sent = time
         if highest_time_sent is None:
             return
+        # reset duplicate acks
+        self.duplicate_acks = None
         # report the rtt found
         self._report_rtt_estimate(self.last_tick_time - highest_time_sent)
 
@@ -160,11 +187,13 @@ class Connection:
             self.received_messages.extend([False] * (relative_message_number - len(self.received_messages) + 1))
         # check if the message has been received
         if self.received_messages[relative_message_number]:
+            self._report_must_send_ack()
             return # already received -> ignore
         # it is a new message -> mark it as such and add it to the received data
         self.received_messages[relative_message_number] = True
         self.received_data_for_user.append((message_number, message))
         if relative_message_number != 0:
+            self._report_must_send_ack()
             return
         # the next required message has been received
         # remove all sequentially received messages from the list
@@ -183,7 +212,6 @@ class Connection:
         # go through all messages and check for timeouts -> if so, prepare to retransmit
         for i, message_info in enumerate(self.unacked_messages):
             if self.last_tick_time >= message_info[ACK_TIMEOUT]:
-                
                 timeout_messages.append(i)
                 message_number = i + self.lowest_unacked_message_number
                 message = message_info[MESSAGE]
@@ -192,15 +220,12 @@ class Connection:
         
         # go through all timeout messages, reset timeout, and incremenet number of timeouts
         for i in timeout_messages:
-            _, _, timeouts, message = self.unacked_messages[i]
+            first_send_time, _, _, timeouts, message = self.unacked_messages[i]
             timeouts += 1
             if timeouts >= self.max_timeouts:
                 # too many timeouts -> close connection
                 self.connected = False
                 return []
-            self.unacked_messages[i] = (self.last_tick_time, self._calculate_ack_timeout(), timeouts, message)
+            self.unacked_messages[i] = (first_send_time, self.last_tick_time, self._calculate_ack_timeout(), timeouts, message)
         
         return packets_to_send
-            
-
-        

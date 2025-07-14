@@ -11,6 +11,12 @@ def send_stun_request(sock: socket, addr: IP_endpoint) -> bytes:
     sock.sendto(message_start + trans_id, addr)
     return trans_id
 
+def create_stun_request_and_trans_id() -> tuple[bytes, bytes]:
+    trans_id = randbytes(16)
+    message_start = b'\x00\x01\x00\x00' # x0001 is bind msg rqst; 0000 is message length
+    message = message_start + trans_id
+    return (message, trans_id)
+
 def get_int(bytes: bytes) -> int:
     return int.from_bytes(bytes, byteorder="big")
 
