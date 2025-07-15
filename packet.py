@@ -5,15 +5,15 @@ class PacketType(Enum):
     ACCEPT = 0b01000000
     DATA = 0b00100000
 
-def create_request_packet(version: int) -> bytes:
+def create_request_packet(convid: int) -> bytes:
     type_bytes = PacketType.REQUEST.value.to_bytes(1, 'big')
-    version_bytes = version.to_bytes(1, 'big')
-    return type_bytes + version_bytes
+    convid_bytes = convid.to_bytes(4, 'big')
+    return type_bytes + convid_bytes
 
-def create_accept_packet(version: int) -> bytes:
+def create_accept_packet(convid: int) -> bytes:
     type_bytes = PacketType.ACCEPT.value.to_bytes(1, 'big')
-    version_bytes = version.to_bytes(1, 'big')
-    return type_bytes + version_bytes
+    convid_bytes = convid.to_bytes(4, 'big')
+    return type_bytes + convid_bytes
 
 def create_data_packet(ack: int, message: tuple[int, bytes] | None) -> bytes:
     data = PacketType.DATA.value.to_bytes(1, 'big')
@@ -32,11 +32,15 @@ def interpret_packet(packet: bytes) -> tuple[PacketType, int, tuple[int, bytes] 
     type = PacketType(packet[0])
     match type:
         case PacketType.REQUEST:
-            version = packet[1]
-            return (type, version, None)
+            if len(packet) < 5:
+                return None
+            convid = int.from_bytes(packet[1:5])
+            return (type, convid, None)
         case PacketType.ACCEPT:
-            version = packet[1]
-            return (type, version, None)
+            if len(packet) < 5:
+                return None
+            convid = int.from_bytes(packet[1:5])
+            return (type, convid, None)
         case PacketType.DATA:
             if len(packet) < 4:
                 return None

@@ -21,6 +21,18 @@ class PsychicClient:
 
         self.closed = False
     
+    def get_server(self) -> IP_endpoint | None:
+        with self.lock:
+            if self.closed or self.connection is None:
+                return None
+            return self.connection[1]
+
+    def get_rtt(self) -> float | None:
+        with self.lock:
+            if self.closed or self.connection is None:
+                return None
+            return self.connection[0].get_rtt()
+
     def stun_in_progress(self) -> bool:
         with self.lock:
             if self.closed or self.stun is None:
@@ -64,7 +76,7 @@ class PsychicClient:
             server_endpoint = get_canonical_endpoint(server, self.socket.family)
             if server_endpoint is None:
                 return
-            self.connector = (ClientConnector(perf_counter_ns(), 0, 5, 500_000_000, 1_000_000_000, self.ack_delay_ns), server_endpoint)
+            self.connector = (ClientConnector((perf_counter_ns() // 1_000_000) % (2**32), perf_counter_ns(), 5, 500_000_000, 1_000_000_000, self.ack_delay_ns), server_endpoint)
     
     def start_stun(self, servers: list[IP_endpoint]):
         with self.lock:

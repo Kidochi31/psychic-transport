@@ -68,6 +68,11 @@ def main():
                 server.close()
             elif text == "stun":
                 server.start_stun(stun_hosts)
+            elif text.startswith("rtt "):
+                text = text.removeprefix("rtt ")
+                target = string_to_endpoint(text)
+                if target is not None:
+                    print(server.get_rtt(target))
             elif text.startswith("hp "):
                 text = text.removeprefix("hp ")
                 target = string_to_endpoint(text)

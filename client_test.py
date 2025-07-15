@@ -70,6 +70,8 @@ def main():
                 client.close()
             elif text == "stun":
                 client.start_stun(stun_hosts)
+            elif text == "rtt":
+                print(client.get_rtt())
             elif text.startswith("connect "):
                 try:
                     text = text.removeprefix("connect ")
@@ -79,7 +81,7 @@ def main():
                         client.connect(endpoint)
                 except:
                     print("failed to connect")
-            if text == "dc":
+            elif text == "dc":
                 client.disconnect()
             else:
                 client.send(text.encode())

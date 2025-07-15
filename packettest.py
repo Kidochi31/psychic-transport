@@ -4,15 +4,15 @@ from collections.abc import Callable
 
 def test_request() -> bool:
     type = PacketType.REQUEST
-    version = randint(0, 255)
-    packet = create_request_packet(version)
-    return test_packet((type, version, None), packet)
+    convid = randint(0, 2**32 - 1)
+    packet = create_request_packet(convid)
+    return test_packet((type, convid, None), packet)
 
 def test_accept() -> bool:
     type = PacketType.ACCEPT
-    version = randint(0, 255)
-    packet = create_accept_packet(version)
-    return test_packet((type, version, None), packet)
+    convid = randint(0, 2**32 - 1)
+    packet = create_accept_packet(convid)
+    return test_packet((type, convid, None), packet)
 
 def test_data() -> bool:
     type = PacketType.DATA

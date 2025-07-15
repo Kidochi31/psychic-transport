@@ -19,12 +19,28 @@ class PsychicServer:
         self.stun: ParallelStun | None = None
         self.ack_delay_ns: int = ack_delay_ns
 
-        self.new_connections: list[IP_endpoint] = []
+        self.new_connections: list[tuple[IP_endpoint, int]] = [] # client, convid
         self.disconnections: list[IP_endpoint] = []
 
         self.lock: Lock = Lock()
         self.closed = False
     
+    def get_clients(self) -> list[IP_endpoint]:
+        with self.lock:
+            if self.closed:
+                return []
+            return self.client_endpoints.copy()
+
+    def get_rtt(self, client: IP_endpoint) -> float | None:
+        with self.lock:
+            if self.closed:
+                return None
+            endpoint = get_canonical_endpoint(client, self.socket.family)
+            if endpoint is None or endpoint not in self.client_endpoints:
+                return None
+            index = self.client_endpoints.index(endpoint)
+            return self.connections[index].get_rtt()
+
     def stun_in_progress(self) -> bool:
         with self.lock:
             if self.closed or self.stun is None:
@@ -69,9 +85,12 @@ class PsychicServer:
 
     def disconnect(self, client: IP_endpoint):
         with self.lock:
-            if client not in self.client_endpoints:
+            if self.closed:
                 return
-            self._disconnect(client)
+            endpoint = get_canonical_endpoint(client, self.socket.family)
+            if endpoint is None or endpoint not in self.client_endpoints:
+                return
+            self._disconnect(endpoint)
     
     def _disconnect(self, client: IP_endpoint):
         index = self.client_endpoints.index(client)
@@ -96,14 +115,12 @@ class PsychicServer:
         if result is None:
             return
         if result[0] == PacketType.REQUEST:
-            version = result[1]
-            if version != 0:
-                 return
+            convid = result[1]
             
-            new_connection = Connection(perf_counter_ns(), 0, 1_000_000_000, self.ack_delay_ns)
+            new_connection = Connection(convid, perf_counter_ns(), 1_000_000_000, self.ack_delay_ns)
             self.client_endpoints.append(address)
             self.connections.append(new_connection)
-            self.new_connections.append(address)
+            self.new_connections.append((address, convid))
             self.hole_puncher.stop_hole_punch(address)
 
     def _report_receive(self, data: bytes, address: IP_endpoint):
@@ -125,7 +142,7 @@ class PsychicServer:
             if server is not None:
                 send_data.extend([(data, server) for data in stun_data])
         # send accept data for any new connections
-        send_data.extend([(create_accept_packet(0), endpoint) for endpoint in self.new_connections])
+        send_data.extend([(create_accept_packet(convid), endpoint) for endpoint, convid in self.new_connections])
         
 
         # tick all connections and get data to send
@@ -164,7 +181,7 @@ class PsychicServer:
                     self.socket.sendto(data, destination)
                 except:
                     pass
-            new_connections = self.new_connections.copy()
+            new_connections = [endpoint for endpoint, _ in self.new_connections]
             disconnections = self.disconnections.copy()
             self.new_connections.clear()
             self.disconnections.clear()
@@ -172,16 +189,22 @@ class PsychicServer:
         
     def send(self, message: bytes, destination: IP_endpoint):
         with self.lock:
-            if self.closed or destination not in self.client_endpoints:
+            if self.closed:
                 return
-            index = self.client_endpoints.index(destination)
+            endpoint = get_canonical_endpoint(destination, self.socket.family)
+            if endpoint is None or endpoint not in self.client_endpoints:
+                return
+            index = self.client_endpoints.index(endpoint)
             self.connections[index].send(message)
     
     def receive(self, source: IP_endpoint) -> tuple[int, bytes] | None:
         with self.lock:
-            if self.closed or source not in self.client_endpoints:
+            if self.closed:
                 return
-            index = self.client_endpoints.index(source)
+            endpoint = get_canonical_endpoint(source, self.socket.family)
+            if endpoint is None or endpoint not in self.client_endpoints:
+                return
+            index = self.client_endpoints.index(endpoint)
             return self.connections[index].receive()
     
     def is_closed(self):

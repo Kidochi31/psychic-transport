@@ -13,8 +13,8 @@ TIMEOUTS = 3
 MESSAGE = 4
 
 class Connection:
-    def __init__(self, time_ms: int, version: int, rtt_ms: int, wait_before_acking: int):
-        self.version = version
+    def __init__(self, convid: int, time_ms: int, rtt_ms: int, wait_before_acking: int):
+        self.convid = convid
         self.rtt: float = rtt_ms
         self.rtt_temperature = INIT_RTT_TEMPERATURE
         self.dev_rtt: float = rtt_ms // 2
@@ -78,8 +78,13 @@ class Connection:
         type = result[0]
         match type:
             case PacketType.REQUEST:
-                # respond to all request packets with an accept
-                self.send_accept = True
+                # respond to all request packets with an accept, only if the convid matches
+                convid = result[1]
+                if convid == self.convid:
+                    self.send_accept = True
+                else:
+                    # disconnect if it doesn't match
+                    self.connected = False
                 return
             case PacketType.ACCEPT:
                 # ignore any further request packets
@@ -88,16 +93,19 @@ class Connection:
                 ack = result[1]
                 message = result[2]
                 self._report_ack_received(ack)
-                if message is not None:
+                if message is not None and not isinstance(message, int):
                     self._report_message_received(message[0], message[1])
 
     def tick(self, time_ms: int) -> list[bytes]:
+        if not self.connected:
+            return []
+
         self.last_tick_time = time_ms
         packets_to_send: list[bytes] = []
         # if an accept needs to be sent, do that
         if self.send_accept:
             self.send_accept = False
-            packets_to_send.append(create_accept_packet(self.version))
+            packets_to_send.append(create_accept_packet(self.convid))
         
         # check if data to send
         timeout_packets = self._manage_and_get_timeout_packets()

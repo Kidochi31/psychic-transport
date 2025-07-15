@@ -4,10 +4,10 @@ from random import randint
 
 alphabet = 'abcdefghijklmnopqrstuvwxyz'
 
-def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: int, server_responses: list[tuple[int, bytes, bool, bool]]) -> bool:
+def test_client_connection(convid: int, max_timeouts: int, request_timeout_ms: int, server_responses: list[tuple[int, bytes, bool, bool]]) -> bool:
     # server_responses: (delay_ms, data, should_connect, immediate_fail)
     start_time = 0
-    client = ClientConnector(start_time, version, max_timeouts, request_timeout_ms, 50_000_000, 50_000_000)
+    client = ClientConnector(convid, start_time, max_timeouts, request_timeout_ms, 50_000_000, 50_000_000)
     if not client.is_connecting():
         print('should be connecting at start')
         return False
@@ -66,8 +66,8 @@ def test_client_connection(version: int, max_timeouts: int, request_timeout_ms: 
             if result[0] != PacketType.REQUEST:
                 print("should be a request packet")
                 return False
-            if result[1] != version:
-                print('version should match')
+            if result[1] != convid:
+                print(f'convid should match: {result[1]} but expected {convid}')
                 return False
         if time_last_request != 0 and current_time - time_last_request > request_timeout_ms + 1:
             print(f'request taken too long: {(current_time - time_last_request)} ms but expected {request_timeout_ms}')
@@ -139,7 +139,7 @@ def create_accept_response(attempts: int, timeout: int, version: int) -> tuple[i
 
 def create_incorrect_version_accept_response(attempts: int, timeout: int, version: int) -> tuple[int, bytes, bool, bool]:
     send_time = randint(0, (attempts + 1) * timeout)
-    different_version = (version + randint(1, 255)) % 256
+    different_version = (version + randint(1, 2**32 - 1)) % 2**32
     return (send_time, create_accept_packet(different_version), False, True)
 
 def test_receiving_accept():
@@ -148,7 +148,7 @@ def test_receiving_accept():
         print("testing...")
         attempts = randint(1, 5)
         timeout = randint(50, 200)
-        version = randint(0, 255)
+        version = randint(0, 2**32 - 1)
         assert test_client_connection(version, attempts, timeout, [create_accept_response(attempts, timeout, version)])
     print('passed')
 
@@ -158,7 +158,7 @@ def test_receiving_accept_wrong_version():
         print('testing...')
         attempts = randint(1, 5)
         timeout = randint(50, 200)
-        version = randint(0, 255)
+        version = randint(0, 2**32 - 1)
         assert test_client_connection(version, attempts, timeout, [create_incorrect_version_accept_response(attempts, timeout, version)])
     print('passed')
 

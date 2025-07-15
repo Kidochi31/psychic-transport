@@ -3,9 +3,9 @@ from packet import interpret_packet, PacketType, create_request_packet
 
 
 class ClientConnector:
-    def __init__(self, time_ms: int, version: int, max_timeouts: int, request_timeout_ms: int, init_rtt: int, wait_before_acking: int):
+    def __init__(self, convid: int, time_ms: int, max_timeouts: int, request_timeout_ms: int, init_rtt: int, wait_before_acking: int):
         self.connection_info:  Connection | None= None
-        self.version = version
+        self.convid = convid
 
         self.time_request_sent: int | None = 0
         self.max_timeouts = max_timeouts
@@ -60,15 +60,15 @@ class ClientConnector:
         return []
 
                     
-    def _manage_accept_packet(self, version: int):
-        if version != self.version:
+    def _manage_accept_packet(self, convid: int):
+        if convid != self.convid:
             self.failed = True
             return
         if self.time_request_sent is None:
             self.failed = True
             return
-        self.connection_info = Connection(self.last_tick_time, self.version, self.init_rtt, self.wait_before_acking)
+        self.connection_info = Connection(self.convid, self.last_tick_time, self.init_rtt, self.wait_before_acking)
     
     def _send_request_to_server(self, time: int) -> bytes:
         self.time_request_sent = time
-        return create_request_packet(self.version)
+        return create_request_packet(self.convid)
