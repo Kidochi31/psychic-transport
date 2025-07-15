@@ -1,4 +1,4 @@
-from socket import AddressFamily, AF_INET, AF_INET6, getaddrinfo, socket
+from socket import AddressFamily, AF_INET, AF_INET6, getaddrinfo, socket, inet_pton, inet_ntop
 from ipaddress import ip_address
 from typing import Union
 
@@ -99,9 +99,9 @@ def get_canonical_endpoint_with_port(endpoint: IP_endpoint, port: int, family: A
 
 def endpoint_to_string(endpoint: IP_endpoint) -> str:
     if len(endpoint) == 2:
-        return f"{endpoint[0]}:{endpoint[1]}"
+        return f"{endpoint[ADDRESS]}:{endpoint[PORT]}"
     else:
-        return f"[{endpoint[0]}]:{endpoint[1]}"
+        return f"[{endpoint[ADDRESS]}]:{endpoint[PORT]}"
 
 def string_to_endpoint(text: str) -> IP_endpoint | None:
     text = text.strip()
@@ -128,3 +128,9 @@ def string_to_endpoint(text: str) -> IP_endpoint | None:
             return None
         port = int(port)
         return (address, port)
+    
+def address_to_bytes(address: str, family: AddressFamily) -> bytes:
+    return inet_pton(family, address)
+
+def bytes_to_address(address: bytes, family: AddressFamily) -> str:
+    return inet_ntop(family, address)
