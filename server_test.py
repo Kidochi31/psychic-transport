@@ -33,7 +33,7 @@ def main():
 
     def tick():
         stun_in_progress = True
-        while not server.closed:
+        while not server.is_closed():
             connections, disconnections = server.tick()
             with clients_lock:
                 for client in connections:

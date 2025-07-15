@@ -1,6 +1,7 @@
-from socket import SOCK_DGRAM, IPPROTO_IPV6, IPV6_V6ONLY, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST
+from socket import SOCK_DGRAM, IPPROTO_IPV6, IPV6_V6ONLY, SOL_SOCKET, SO_REUSEADDR, SO_BROADCAST, AF_INET, IP_ADD_MEMBERSHIP, IPPROTO_IP, IP_MULTICAST_TTL, INADDR_ANY
 from iptools import *
 from typing import Any
+from struct import pack
 
 BUFSIZE = 2000
 DUMMY_ENDPOINT : unresolved_endpoint  = ("192.0.2.1", 2000)
@@ -24,7 +25,18 @@ def create_ordinary_udp_socket(port: int, family: AddressFamily) -> socket:
     udp_socket.bind(('', port)) # bind the socket
     return udp_socket
 
+def create_broadcast_sending_socket(port: int, family: AddressFamily, multicast_ttl:int = 32) -> socket:
+    s = create_unbound_udp_socket(family)
+    s.setsockopt(IPPROTO_IP, IP_MULTICAST_TTL, multicast_ttl)
+    s.bind(('', port))
+    return s
 
+def create_broadcast_receiving_socket(port: int, multicast_group: str, family: AddressFamily) -> socket:
+    s = create_unbound_udp_socket(family)
+    s.bind(('', port))
+    mreq = pack("4sl", address_to_bytes(multicast_group, family), INADDR_ANY)
+    s.setsockopt(IPPROTO_IP, IP_ADD_MEMBERSHIP, mreq)
+    return s
 
 def make_socket_reusable(socket: socket):
     socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)

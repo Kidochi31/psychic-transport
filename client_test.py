@@ -63,7 +63,7 @@ def main():
 
     try:
         while True:
-            if client.closed:
+            if client.is_closed():
                 break
             text = input("")
             if text == "quit":

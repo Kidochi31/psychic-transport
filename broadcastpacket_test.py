@@ -1,4 +1,4 @@
-from broadcastpacket import create_request_packet, create_accept_packet, interpret_accept_packet, is_request_packet
+from broadcastpacket import create_request_packet, create_answer_packet, interpret_answer_packet, is_request_packet
 from random import randint
 from collections.abc import Callable
 from ipaddress import IPv6Address, IPv4Address
@@ -27,8 +27,8 @@ def test_ipv6_accept() -> bool:
     rand_address = IPv6Address(rand_address_int).compressed
     endpoint = (rand_address, rand_port, 0, 0)
     data = generate_random_data()
-    packet = create_accept_packet(endpoint, data)
-    result = interpret_accept_packet(packet)
+    packet = create_answer_packet(endpoint, data)
+    result = interpret_answer_packet(packet)
     if result is None:
         return False
     int_endpoint, int_data = result
@@ -40,8 +40,8 @@ def test_ipv4_accept() -> bool:
     rand_address = IPv4Address(rand_address_int).compressed
     endpoint = (rand_address, rand_port)
     data = generate_random_data()
-    packet = create_accept_packet(endpoint, data)
-    result = interpret_accept_packet(packet)
+    packet = create_answer_packet(endpoint, data)
+    result = interpret_answer_packet(packet)
     if result is None:
         return False
     int_endpoint, int_data = result
@@ -49,7 +49,7 @@ def test_ipv4_accept() -> bool:
 
 def test_random_accept() -> bool:
     packet = generate_random_data()
-    return interpret_accept_packet(packet) == None
+    return interpret_answer_packet(packet) == None
 
 # def test_accept() -> bool:
 #     type = PacketType.ACCEPT

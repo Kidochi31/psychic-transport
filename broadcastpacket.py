@@ -2,7 +2,7 @@ from iptools import IP_endpoint, PORT, ADDRESS, get_endpoint_family, address_to_
 from socket import AF_INET, AF_INET6
 
 REQUEST_START = b'REQUEST.'
-ACCEPT_START = b'ANSW.'
+ANSWER_START = b'ANSW.'
 
 def create_request_packet() -> bytes:
     return REQUEST_START
@@ -10,8 +10,8 @@ def create_request_packet() -> bytes:
 def is_request_packet(packet: bytes) -> bool:
     return packet == REQUEST_START
 
-def create_accept_packet(endpoint: IP_endpoint, data: bytes) -> bytes:
-    start = ACCEPT_START
+def create_answer_packet(endpoint: IP_endpoint, data: bytes) -> bytes:
+    start = ANSWER_START
     family = get_endpoint_family(endpoint)
     ip_version = 4 if family == AF_INET else 6
     ip_version_bytes = ip_version.to_bytes(1, 'big')
@@ -21,10 +21,10 @@ def create_accept_packet(endpoint: IP_endpoint, data: bytes) -> bytes:
     address_bytes = address_to_bytes(address, family)
     return start + ip_version_bytes + port_bytes + address_bytes + data
 
-def interpret_accept_packet(packet: bytes) -> tuple[IP_endpoint, bytes] | None:
-    if not packet.startswith(ACCEPT_START):
+def interpret_answer_packet(packet: bytes) -> tuple[IP_endpoint, bytes] | None:
+    if not packet.startswith(ANSWER_START):
         return None
-    packet = packet.removeprefix(ACCEPT_START)
+    packet = packet.removeprefix(ANSWER_START)
     if len(packet) < 3:
         return None
     ip_version = packet[0]
