@@ -32,7 +32,7 @@ def main():
         while not client.is_closed():
             new_servers = client.tick()
             if len(new_servers) > 0:
-                print('neew servers')
+                print('new servers')
             for endpoint, data in new_servers:
                 print(f"server found at {endpoint}: {data}")
 

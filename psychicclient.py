@@ -68,15 +68,17 @@ class PsychicClient:
             self.connector = None
             self.connection = None
 
-    def connect(self, server: IP_endpoint):
+    def connect(self, server: IP_endpoint) -> bool:
+        # returns true if it is attempting to connect
         with self.lock:
-            if (self.connection is not None and not self.connection[0].is_connected()) or self.closed:
-                return
+            if (self.connection is not None and self.connection[0].is_connected()) or self.closed:
+                return False
             self.connector = None
             server_endpoint = get_canonical_endpoint(server, self.socket.family)
             if server_endpoint is None:
-                return
+                return False
             self.connector = (ClientConnector((perf_counter_ns() // 1_000_000) % (2**32), perf_counter_ns(), 5, 500_000_000, 1_000_000_000, self.ack_delay_ns), server_endpoint)
+            return True
     
     def start_stun(self, servers: list[IP_endpoint]):
         with self.lock:
